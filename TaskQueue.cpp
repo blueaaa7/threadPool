@@ -5,7 +5,6 @@ TaskQueue::TaskQueue()
     mtx.lock();
 }
 
-
 TaskQueue::~TaskQueue()
 {
     mtx.unlock();
