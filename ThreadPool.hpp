@@ -1,54 +1,69 @@
-#pragma once
-#include "TaskQueue.hpp"
+#include <iostream>
 #include <thread>
+#include <vector>
+#include <mutex>
+#include <queue>
+#include <functional>
 #include <condition_variable>
-#include <memory>
 
-using threadID = std::thread::id;
-using mtx = std::mutex;
-using cv = std::condition_variable;
 class ThreadPool
 {
-private:
-    // TaskQueue* taskQueue; // 任务队列
-    std::shared_ptr<TaskQueue> taskQueue;
-    threadID managerID; // 管理者ID
-    threadID workerID; // 工作者ID 
-    int minNum; // 最小线程数   
-    int maxNum; //最大线程数
-    int busyNum; // 忙碌线程数 
-    int liveNum; //存活的线程个数
-    int exitNum; // 退出的线程个数
-    mtx mtxPool; // 锁整个线程池
-    // cv notFull; //任务队列是不是满了
-    cv notEmpty; //任务队列是不是空了
-
-    bool shutdown; //是否销毁线程池，销毁为true，不销毁为false
-
 public:
-    //创建线程池并初始化
-    ThreadPool(int min,int max);
+    ThreadPool(int numThreads) : stop(false)
+    {
+        for (int i = 0; i < numThreads; i++)
+        {
+            threads.emplace_back([this]()
+                                 {
+                while (1)
+                {
+                    std::unique_lock<std::mutex> lock(mtx);
+                    cv.wait(lock,[this](){
+                        return stop || !tasks.empty(); //false发生阻塞
+                    });
+                    if(stop && tasks.empty())
+                    {
+                        return;
+                    }
+                    std::function<void()> task(std::move(tasks.front()));
+                    tasks.pop();
+                    lock.unlock();
+                    task();
+                } });
+        }
+    }
+    ~ThreadPool()
+    {
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            stop = true;
+        }
+        cv.notify_all();
+        for (auto &thread : threads)
+        {
+            thread.join();
+        }
+    }
 
-    //销毁线程池
-    ~ThreadPool();
-
-    //给线程池添加任务
-    void addTask(Task task);
-
-    //获取线程池中busy的线程数
-    int getBusyNum();
-
-    //获取线程池中存活的线程数
-    int getLiveNum();
+    template <class F, class... Args>
+    void addTask(F &&f, Args &&...args) // 在template里面，&&是万能引用，左值就是左值，右值就是右值
+    {
+        std::function<void()> task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            tasks.emplace(std::move(task));
+        }
+        cv.notify_one();
+    }
 
 private:
-    //工作的线程函数（消费者）
-    void workerThread();
+    std::vector<std::thread> threads;        // 线程数组
+    std::queue<std::function<void()>> tasks; // 任务队列
 
-    //管理者线程函数
-    void managerThread();
+    std::mutex mtx;
+    std::condition_variable cv;
 
-    //单个线程退出
-    void threadExit();
-    
+    bool stop;
 };
+
+
